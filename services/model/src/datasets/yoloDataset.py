@@ -1,12 +1,14 @@
 from pathlib import Path
 
-import torchvision.transforms as t
+import torch
 from PIL import Image
+from torchvision import tv_tensors
 from torchvision.datasets import VisionDataset
+from torchvision.transforms import v2
 
 
 class YOLODataset(VisionDataset):
-    def __init__(self, root: str, transforms: t.transforms.Compose):
+    def __init__(self, root: str, transforms: v2.Compose):
         """
         set up your dataset (paths, annotations, transforms, and other configurations).
         :param root: path dataset/train or dataset/test or dataset/validation
@@ -39,7 +41,8 @@ class YOLODataset(VisionDataset):
 
         label_path = self.label_dir / f"{image_path.stem}.txt" # Get the label path using the image
 
-        annotations = []
+        class_ids = []
+        boxes = []
         with open(label_path, mode="r") as f:
             for line in f:
                 class_id, x_center, y_center, width, height = map(float, line.split())
@@ -56,20 +59,24 @@ class YOLODataset(VisionDataset):
                 x_max = x_center + width / 2
                 y_max = y_center + height / 2
 
-                annotations.append({
-                    "class_id":int(class_id),
-                    "bbox":[x_min, y_min, x_max, y_max]
-                })
+                boxes.append([x_min, y_min, x_max, y_max])
+                class_ids.append(int(class_id))
+
+        bbox = tv_tensors.BoundingBoxes(
+            data=torch.tensor(boxes),
+            format="XYXY",
+            canvas_size=(img_height, img_width),
+        )
 
         if self.transform:
-            image = self.transform(image)
-        return image, annotations
+            image, bbox = self.transform(image, bbox) # transform both the box and the image (Geometric transformations)
+        return image, {"class_ids": class_ids, "bbox": bbox}
 
 if __name__ == "__main__":
-    transform_pipeline = t.Compose(
+    transform_pipeline = v2.Compose(
         [
-            t.ToTensor(),
-            t.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            v2.ToTensor(),
+            v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
 
