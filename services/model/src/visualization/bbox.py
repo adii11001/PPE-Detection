@@ -25,7 +25,7 @@ def draw_bbox(image: torch.Tensor, annotations):
     _, ax = plt.subplots(1)
     ax.imshow(img)
 
-    for class_id, bbox in zip(annotations["class_ids"], annotations["bbox"]):
+    for class_id, bbox in zip(annotations["labels"], annotations["boxes"]):
         x_min, y_min, x_max, y_max = bbox
 
         width = x_max - x_min
@@ -41,7 +41,10 @@ def draw_bbox(image: torch.Tensor, annotations):
 if __name__ == "__main__":
     transform_pipeline = v2.Compose(
         [
-            v2.ToTensor(),
+            v2.Resize((224, 224)),
+            v2.RandomHorizontalFlip(),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
