@@ -19,7 +19,14 @@ class YOLODataset(VisionDataset):
         self.img_dir = self.root / "images"
         self.label_dir = self.root / "labels"
 
-        self.images = list(self.img_dir.glob(pattern="*.jpg")) # stores all of them image paths
+        self.images = [] # stores all of them image paths
+        for file in list(self.img_dir.glob(pattern="*.jpg")):
+            label_dir = self.label_dir / f"{file.stem}.txt"
+            with open(label_dir, "r") as f:
+                for line in f:
+                    if len(line.split()) > 5: break
+                else:
+                    self.images.append(file)
 
     def __len__(self):
         """
@@ -70,12 +77,14 @@ class YOLODataset(VisionDataset):
 
         if self.transform:
             image, bbox = self.transform(image, bbox) # transform both the box and the image (Geometric transformations)
-        return image, {"class_ids": class_ids, "bbox": bbox}
+        return image, {"labels": class_ids, "boxes": bbox}
 
 if __name__ == "__main__":
     transform_pipeline = v2.Compose(
         [
-            v2.ToTensor(),
+            v2.Resize((224, 224)),
+            v2.ToImage(),
+            v2.ToDtype(dtype=torch.float16, scale=True),
             v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
@@ -84,5 +93,11 @@ if __name__ == "__main__":
         root="C:/Users/admin/Desktop/git/PPE-Detection/services/model/dataset/train",
         transforms=transform_pipeline,
     )
-    print("Shape of the image tensor: ", train_dataset[0][0].shape)
-    print("Annotations: ", train_dataset[0][1])
+    item_1 = train_dataset[0]
+    item_2 = train_dataset[1]
+
+    for idx, item in enumerate(train_dataset):
+        if idx == 1: break
+        print("Image: \n", item[0])
+        print("Class IDs: \n", item[1]["labels"])
+        print("BBOX: \n", item[1]["boxes"])
