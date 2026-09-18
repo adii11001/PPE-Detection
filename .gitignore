@@ -1,1 +1,3 @@
 services/model/dataset
+__pycache__/
+*.pyc
