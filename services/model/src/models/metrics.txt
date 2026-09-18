@@ -1,0 +1,5 @@
+Parameters size: 15437360
+Buffers size: 161136
+Model size: 14.876MB
+Inference mean latency: 122.470ms
+Inference median latency: 127.349ms
