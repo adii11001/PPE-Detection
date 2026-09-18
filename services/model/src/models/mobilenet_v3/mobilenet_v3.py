@@ -1,31 +1,51 @@
 import time
+from functools import partial
 
 import src.utils as utils
 import torch
 import yaml
 from src.datasets.yoloDataset import YOLODataset
+from torch import nn
 from torchvision.models.detection import (
     SSDLite320_MobileNet_V3_Large_Weights,
     ssdlite320_mobilenet_v3_large,
 )
+from torchvision.models.detection import _utils as det_utils
 from torchvision.models.detection.ssd import SSD
+from torchvision.models.detection.ssdlite import SSDLiteClassificationHead
 
 
 def build_ppe_model():
     """
-    Adds the PPE head to the pretrained MobileNet V3 model.
+    Adds the PPE head to the pretrained MobileNet V3 model. We have to create a custom classification head for the
+    MobileNet v3 model for our dataset which has 10 classes.
     :return: returns ssdlite320_mobilenet_v3_large with default weights and number of classes set to
     number of classes in PPE
     """
-    with open('../../dataset/data.yaml', 'r') as f:
+    with open("../../../dataset/data.yaml", "r") as f:
         data = yaml.load(f, Loader=yaml.SafeLoader)
     nc = data["nc"]
 
     model = ssdlite320_mobilenet_v3_large(
-        weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT,
-        num_classes=nc + 1
+        weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT
     )
 
+    in_channels = det_utils.retrieve_out_channels(
+        model=model.backbone,  # The module whose out channels we need
+        size=(320, 320),  # The input of mobilenet_v3 large is 320 x 320
+    )  # return a list of out channels as there are multiple feature maps
+
+    num_anchors = (
+        model.anchor_generator.num_anchors_per_location()
+    )  # number of anchors for each feature map
+    norm_layer = partial(nn.BatchNorm2d, eps=0.001, momentum=0.03)
+
+    model.classification_head = SSDLiteClassificationHead(
+        in_channels=in_channels,
+        num_anchors=num_anchors,
+        num_classes=nc + 1,
+        norm_layer=norm_layer
+    )
     return model
 
 
@@ -55,7 +75,7 @@ def export_to_onnx(model: SSD):
         args=(input_tensor),
         f="ssdlite320_mobilenet_v3.onnx",
         input_names=["input"],
-        dynamo=False  # supporting model export using TorchDynamo
+        dynamo=False,  # supporting model export using TorchDynamo
     )
     print("Model exported to onnx")
 
@@ -68,12 +88,14 @@ def parameter_calc(model):
     """
     param_size = 0
     for param in model.parameters():
-        param_size += param.nelement() * param.element_size()  # no.of elem * size of each element (4B here)
+        param_size += (
+            param.nelement() * param.element_size()
+        )  # no.of elem * size of each element (4B here)
     buffer_size = 0
     for buffer in model.buffers():
         buffer_size += buffer.nelement() * buffer.element_size()
 
-    size_all_mb = (param_size + buffer_size) / 1024 ** 2
+    size_all_mb = (param_size + buffer_size) / 1024**2
     return (param_size, buffer_size, size_all_mb)
 
 
@@ -116,18 +138,19 @@ def write_metrics(model: SSD):
 
 
 if __name__ == "__main__":
-    model = ssdlite320_mobilenet_v3_large(weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT)
-    # x = [torch.rand(3, 320, 320)]
-    # model.eval()
-    #
-    # with torch.no_grad():
-    #     predictions = model(x)  # [{"boxes": torch.tensor, "scores": torch.tensor, "labels": torch.tensor}]
-    #
+    model = build_ppe_model()
+
+    x = [torch.rand(3, 320, 320)]
+    model.eval()
+
+    with torch.no_grad():
+        predictions = model(x)  # [{"boxes": torch.tensor, "scores": torch.tensor, "labels": torch.tensor}]
+
     # pred = predictions[0]
     # bbox.draw_bbox(x[0], pred)
-    #
-    # write_metrics(model)
-    #
-    # print("Evaluation written into metrics.txt")
 
-    export_to_onnx(model)
+    write_metrics(model)
+
+    print("Evaluation written into metrics.txt")
+
+    # export_to_onnx(model)
