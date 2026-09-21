@@ -1,11 +1,14 @@
 import time
 from functools import partial
 
-import src.utils as utils
+# import src.utils as utils
 import torch
 import yaml
+from src.dataloaders.dataloader import custom_dataloader
 from src.datasets.yoloDataset import YOLODataset
+from torchvision.transforms import v2
 from torch import nn
+from torch.utils.data import DataLoader
 from torchvision.models.detection import (
     SSDLite320_MobileNet_V3_Large_Weights,
     ssdlite320_mobilenet_v3_large,
@@ -13,6 +16,7 @@ from torchvision.models.detection import (
 from torchvision.models.detection import _utils as det_utils
 from torchvision.models.detection.ssd import SSD
 from torchvision.models.detection.ssdlite import SSDLiteClassificationHead
+from tqdm import tqdm
 
 
 def build_ppe_model():
@@ -27,7 +31,7 @@ def build_ppe_model():
     nc = data["nc"]
 
     model = ssdlite320_mobilenet_v3_large(
-        weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT
+        weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT,
     )
 
     in_channels = det_utils.retrieve_out_channels(
@@ -44,7 +48,7 @@ def build_ppe_model():
         in_channels=in_channels,
         num_anchors=num_anchors,
         num_classes=nc + 1,
-        norm_layer=norm_layer
+        norm_layer=norm_layer,
     )
     return model
 
@@ -54,19 +58,68 @@ def evaluation_pipeline(model, X: torch.Tensor, annotations: dict[str, list]):
     Function to calculate the precision, recall, F1 score, mAP, IoU
     :param annotations: python dictionary
     :param model: ssdlite320_mobilenet_v3_large
-    :param X: list(torch.tensor)
+    :param X: list(torch.tensor)x
     :return:
     """
-    model.eval()
-    with torch.no_grad():
-        predictions = model(X)
-
-
-def training_pipeline(model: SSD, train_dataset: YOLODataset):
     pass
 
 
+def training_pipeline(model: SSD, epochs: int, train_dataloader: DataLoader):
+    """
+    The training pipeline for the model.
+    1. Set to training mode
+    2. Zero gradient
+    3. Forward pass
+    4. Loss computation
+    5. Backward propagation (for parameter x in the model, d(loss) / dx is computed and stored in x.grad)
+    6. Optimizer step (updates the value of x using the gradient x.grad)
+    :param model:
+    :param epochs:
+    :param train_dataloader:
+    :return:
+    """
+    optimizer = torch.optim.SGD(params=model.parameters(), lr=0.1, momentum=0.9)
+
+    log = {"loss": [], "time": []}
+    for epoch in range(epochs):
+        start_time = time.perf_counter()
+        epoch_loss = 0
+        prog_bar = tqdm(
+            train_dataloader, desc=f"Epoch {epoch + 1}", leave=False
+        )
+        model.train()
+        for batch_idx, batch in enumerate(prog_bar):
+            images, labels = batch
+
+            # zero gradients for each batch
+            optimizer.zero_grad()
+
+            # loss computation
+            loss_dict = model(images, labels)
+            loss = sum(loss for loss in loss_dict.values())
+            epoch_loss += loss.item()
+
+            # backward propagation
+            loss.backward()
+
+            # Optimizer step
+            optimizer.step()
+
+            prog_bar.set_postfix(loss=f"{loss.item():.4f}")
+        end_time = time.perf_counter()
+        avg_loss = epoch_loss / len(train_dataloader)
+        time_taken = end_time - start_time
+        log["loss"].append(avg_loss)
+        log["time"].append(time_taken)
+        print(f" Avg loss: {avg_loss} | Time: {time_taken * 1000:.3f}ms")
+
+
 def export_to_onnx(model: SSD):
+    """
+    Function to convert the model to onnx
+    :param model: ssdlite320_mobilenet_v3_large
+    :return: None
+    """
     model.eval()
     input_tensor = torch.rand((1, 3, 64, 64), dtype=torch.float32)
 
@@ -140,17 +193,27 @@ def write_metrics(model: SSD):
 if __name__ == "__main__":
     model = build_ppe_model()
 
-    x = [torch.rand(3, 320, 320)]
-    model.eval()
-
-    with torch.no_grad():
-        predictions = model(x)  # [{"boxes": torch.tensor, "scores": torch.tensor, "labels": torch.tensor}]
-
-    # pred = predictions[0]
-    # bbox.draw_bbox(x[0], pred)
-
-    write_metrics(model)
-
-    print("Evaluation written into metrics.txt")
-
-    # export_to_onnx(model)
+    transform_pipeline = v2.Compose(
+        [
+            v2.ToImage(),
+            v2.ToDtype(dtype=torch.float32, scale=True)
+        ]
+    )
+    train_dataset = YOLODataset(root="../../../dataset/train", transforms=transform_pipeline)
+    train_dataloader = custom_dataloader(train_dataset, 4, 0)
+    training_pipeline(model, 1, train_dataloader)
+    # model.eval()
+    #
+    # with torch.no_grad():
+    #     predictions = model(
+    #         x
+    #     )  # [{"boxes": torch.tensor, "scores": torch.tensor, "labels": torch.tensor}]
+    #
+    # # pred = predictions[0]
+    # # bbox.draw_bbox(x[0], pred)
+    #
+    # write_metrics(model)
+    #
+    # print("Evaluation written into metrics.txt")
+    #
+    # # export_to_onnx(model)
