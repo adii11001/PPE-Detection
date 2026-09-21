@@ -1,3 +1,4 @@
+import os.path
 import time
 from functools import partial
 
@@ -78,7 +79,7 @@ def training_pipeline(model: SSD, epochs: int, train_dataloader: DataLoader):
     :param train_dataloader:
     :return:
     """
-    optimizer = torch.optim.SGD(params=model.parameters(), lr=0.1, momentum=0.9)
+    optimizer = torch.optim.SGD(params=model.parameters(), lr=0.01, momentum=0.9)
 
     log = {"loss": [], "time": []}
     for epoch in range(epochs):
@@ -112,6 +113,8 @@ def training_pipeline(model: SSD, epochs: int, train_dataloader: DataLoader):
         log["loss"].append(avg_loss)
         log["time"].append(time_taken)
         print(f" Avg loss: {avg_loss} | Time: {time_taken * 1000:.3f}ms")
+
+    torch.save(model.state_dict(), "./saved_model_weights/model.pth")
 
 
 def export_to_onnx(model: SSD):
@@ -192,7 +195,8 @@ def write_metrics(model: SSD):
 
 if __name__ == "__main__":
     model = build_ppe_model()
-
+    if os.path.exists("./saved_model_weights/model.pth"):
+        model.load_state_dict(torch.load("./saved_model_weights/model.pth"))
     transform_pipeline = v2.Compose(
         [
             v2.ToImage(),
