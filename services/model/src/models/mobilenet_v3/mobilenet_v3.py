@@ -2,13 +2,15 @@ import os.path
 import time
 from functools import partial
 
-# import src.utils as utils
 import torch
 import yaml
 from src.dataloaders.dataloader import custom_dataloader
 from src.datasets.yoloDataset import YOLODataset
-from torchvision.transforms import v2
+
+# import src.utils as utils
+from src.visualization.bbox import draw_bbox
 from torch import nn
+from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision.models.detection import (
     SSDLite320_MobileNet_V3_Large_Weights,
@@ -17,6 +19,7 @@ from torchvision.models.detection import (
 from torchvision.models.detection import _utils as det_utils
 from torchvision.models.detection.ssd import SSD
 from torchvision.models.detection.ssdlite import SSDLiteClassificationHead
+from torchvision.transforms import v2
 from tqdm import tqdm
 
 
@@ -45,7 +48,7 @@ def build_ppe_model():
     )  # number of anchors for each feature map
     norm_layer = partial(nn.BatchNorm2d, eps=0.001, momentum=0.03)
 
-    model.classification_head = SSDLiteClassificationHead(
+    model.head.classification_head = SSDLiteClassificationHead(
         in_channels=in_channels,
         num_anchors=num_anchors,
         num_classes=nc + 1,
@@ -67,27 +70,34 @@ def evaluation_pipeline(model, X: torch.Tensor, annotations: dict[str, list]):
 
 def training_pipeline(model: SSD, epochs: int, train_dataloader: DataLoader):
     """
-    The training pipeline for the model.
+    The training pipeline for the model. Uses CosineAnnealingLR as LR scheduler
     1. Set to training mode
     2. Zero gradient
     3. Forward pass
     4. Loss computation
     5. Backward propagation (for parameter x in the model, d(loss) / dx is computed and stored in x.grad)
     6. Optimizer step (updates the value of x using the gradient x.grad)
-    :param model:
-    :param epochs:
-    :param train_dataloader:
-    :return:
-    """
-    optimizer = torch.optim.SGD(params=model.parameters(), lr=0.01, momentum=0.9)
+    :param model: ssdlite320_mobilenet_v3_large
+    :param epochs: int
+    :param train_dataloader: training dataloader created using custom collate fn
+    :return: None
 
+    Sources:
+    * https://discuss.pytorch.org/t/what-does-the-backward-function-do/9944/2
+    * https://www.kaggle.com/code/fitrinabillarahmam/training-mobilenet-ssdlite-v3-large
+    * https://docs.pytorch.org/docs/2.14/generated/torch.optim.lr_scheduler.CosineAnnealingLR.html
+    """
+    optimizer = torch.optim.SGD(params=model.parameters(), lr=0.1, momentum=0.9)
+    cosine_lr_scheduler = lr_scheduler.CosineAnnealingLR(
+        optimizer=optimizer, T_max=epochs
+    )
     log = {"loss": [], "time": []}
     for epoch in range(epochs):
         start_time = time.perf_counter()
         epoch_loss = 0
-        prog_bar = tqdm(
-            train_dataloader, desc=f"Epoch {epoch + 1}", leave=False
-        )
+        prog_bar = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}", leave=False)
+
+        # Training
         model.train()
         for batch_idx, batch in enumerate(prog_bar):
             images, labels = batch
@@ -107,6 +117,13 @@ def training_pipeline(model: SSD, epochs: int, train_dataloader: DataLoader):
             optimizer.step()
 
             prog_bar.set_postfix(loss=f"{loss.item():.4f}")
+
+        # Validation
+
+        cosine_lr_scheduler.step()
+
+        # Testing
+
         end_time = time.perf_counter()
         avg_loss = epoch_loss / len(train_dataloader)
         time_taken = end_time - start_time
@@ -115,6 +132,23 @@ def training_pipeline(model: SSD, epochs: int, train_dataloader: DataLoader):
         print(f" Avg loss: {avg_loss} | Time: {time_taken * 1000:.3f}ms")
 
     torch.save(model.state_dict(), "./saved_model_weights/model.pth")
+
+
+def validation_pipeline(model: SSD, validation_dataloader: DataLoader):
+    model.eval()  # Turns the learning in layers off so that the model doesn't have a glimpse of the validation dataset
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(validation_dataloader):
+            images, labels = batch
+
+            preds = model(images)
+
+
+def inference_engine(model: SSD, X: torch.Tensor):
+    path = "./saved_model_weights"
+    if not os.path.exists(f"{path}/model.pth"):
+        raise FileNotFoundError(f"No trained models found at {path}")
+    model.load_state_dict(torch.load(f="./saved_model_weights/model.pth"))
+    return model(X)
 
 
 def export_to_onnx(model: SSD):
@@ -197,27 +231,20 @@ if __name__ == "__main__":
     model = build_ppe_model()
     if os.path.exists("./saved_model_weights/model.pth"):
         model.load_state_dict(torch.load("./saved_model_weights/model.pth"))
-    transform_pipeline = v2.Compose(
-        [
-            v2.ToImage(),
-            v2.ToDtype(dtype=torch.float32, scale=True)
-        ]
-    )
-    train_dataset = YOLODataset(root="../../../dataset/train", transforms=transform_pipeline)
-    train_dataloader = custom_dataloader(train_dataset, 4, 0)
-    training_pipeline(model, 1, train_dataloader)
-    # model.eval()
-    #
-    # with torch.no_grad():
-    #     predictions = model(
-    #         x
-    #     )  # [{"boxes": torch.tensor, "scores": torch.tensor, "labels": torch.tensor}]
-    #
-    # # pred = predictions[0]
-    # # bbox.draw_bbox(x[0], pred)
-    #
-    # write_metrics(model)
-    #
-    # print("Evaluation written into metrics.txt")
-    #
-    # # export_to_onnx(model)
+
+    # transform_pipeline = v2.Compose(
+    #     [v2.ToImage(), v2.ToDtype(dtype=torch.float32, scale=True)]
+    # )
+    # train_dataset = YOLODataset(
+    #     root="../../../dataset/train", transforms=transform_pipeline
+    # )
+    # train_dataloader = custom_dataloader(train_dataset, 4, 0)
+    # training_pipeline(model, 1, train_dataloader)
+
+    model.eval()
+
+    x = [torch.rand(size=(3, 320, 320))] # Random image tensor
+    with torch.no_grad():
+        predictions = model(x)  # [{"boxes": torch.tensor, "scores": torch.tensor, "labels": torch.tensor}]
+    pred = predictions[0]
+    print(predictions)
